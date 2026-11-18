@@ -275,9 +275,119 @@ class Block(nn.Module):
 
 
 # --- Milestone 4: Set up the training loop and train the GPT model on the narrative data.
-# Hint: Training Loop: Implement the full training process, including forward/backward passes and optimization, for your GPT model.
-def milestone_4():  # TODO(milestone 4)
-    raise NotImplementedError("TODO(milestone 4)")
+
+@dataclass
+class GPTConfig:
+    vocab_size: int = 1024
+    block_size: int = 128
+    n_layer: int = 4
+    n_head: int = 4
+    n_embd: int = 128
+    dropout: float = 0.1
+
+
+class GPT(nn.Module):
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        self.config = config
+        self.emb = Embeddings(config.vocab_size, config.block_size, config.n_embd)
+        self.drop = nn.Dropout(config.dropout)
+        self.blocks = nn.Sequential(*[Block(config.n_embd, config.n_head, config.block_size, config.dropout)
+                                      for _ in range(config.n_layer)])
+        self.ln_f = nn.LayerNorm(config.n_embd)
+        self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.head.weight = self.emb.tok.weight  # weight tying: same matrix reads and writes tokens
+        self.apply(self._init)
+
+    @staticmethod
+    def _init(m: nn.Module) -> None:
+        if isinstance(m, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(m.weight, mean=0.0, std=0.02)
+        if isinstance(m, nn.Linear) and m.bias is not None:
+            nn.init.zeros_(m.bias)
+
+    def num_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+    def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
+        x = self.blocks(self.drop(self.emb(idx)))
+        logits = self.head(self.ln_f(x))
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
+
+
+def get_batch(data: torch.Tensor, block_size: int, batch_size: int,
+              gen: torch.Generator | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Random windows of the token stream; targets are the inputs shifted one token left."""
+    ix = torch.randint(len(data) - block_size - 1, (batch_size,), generator=gen)
+    x = torch.stack([data[i:i + block_size] for i in ix])
+    y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
+    return x, y
+
+
+@torch.no_grad()
+def estimate_loss(model: GPT, data: torch.Tensor, batch_size: int = 32, iters: int = 20,
+                  seed: int = 0) -> float:
+    model.eval()
+    gen = torch.Generator().manual_seed(seed)
+    losses = [model(*get_batch(data, model.config.block_size, batch_size, gen))[1].item()
+              for _ in range(iters)]
+    model.train()
+    return sum(losses) / len(losses)
+
+
+def train_model(ids: list[int], config: GPTConfig, steps: int = 3000, batch_size: int = 32,
+                lr: float = 3e-3, eval_every: int = 250, seed: int = 1337, log=print,
+                model: GPT | None = None) -> tuple[GPT, list[dict]]:
+    """AdamW + linear warm-up + cosine decay. 90/10 train/validation split. Returns model and loss history."""
+    torch.manual_seed(seed)
+    data = torch.tensor(ids, dtype=torch.long)
+    split = int(0.9 * len(data))
+    train_data, val_data = data[:split], data[split:]
+    model = model or GPT(config)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1, betas=(0.9, 0.95))
+    warmup = max(1, steps // 20)
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, steps) / steps)))
+    gen = torch.Generator().manual_seed(seed)
+    history, start = [], time.time()
+    model.train()
+    for step in range(steps + 1):
+        if step % eval_every == 0 or step == steps:
+            row = {"step": step, "train_loss": round(estimate_loss(model, train_data), 4),
+                   "val_loss": round(estimate_loss(model, val_data), 4),
+                   "seconds": round(time.time() - start, 1)}
+            history.append(row)
+            log(f"step {step:>5} | train {row['train_loss']:.3f} | val {row['val_loss']:.3f} "
+                f"| {row['seconds']}s")
+        if step == steps:
+            break
+        x, y = get_batch(train_data, config.block_size, batch_size, gen)
+        _, loss = model(x, y)
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        sched.step()
+    model.eval()
+    return model, history
+
+
+def save_checkpoint(path: Path, model: GPT, tok: BPETokenizer, history: list[dict] | None = None) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"config": asdict(model.config), "state": model.state_dict(),
+                "merges": tok.merges, "history": history or []}, path)
+
+
+def load_checkpoint(path: Path = CHECKPOINT) -> tuple[GPT, BPETokenizer, list[dict]]:
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    model = GPT(GPTConfig(**ckpt["config"]))
+    model.load_state_dict(ckpt["state"])
+    model.eval()
+    return model, BPETokenizer(ckpt["merges"]), ckpt.get("history", [])
 
 
 # --- Milestone 5: Implement a text generation feature that creates coherent story continuations.

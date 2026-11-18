@@ -79,9 +79,39 @@ def test_block_keeps_shape_and_checks_heads():
 
 
 # Milestone 4: Set up the training loop and train the GPT model on the narrative data.
-@pytest.mark.skip(reason="remove this line when you start milestone 4")
-def test_milestone_4():
-    raise NotImplementedError("write the test for milestone 4")
+TINY = dict(block_size=32, n_layer=2, n_head=2, n_embd=32, dropout=0.0)
+
+
+@pytest.fixture(scope="module")
+def trained(tok):
+    config = core.GPTConfig(vocab_size=tok.vocab_size, **TINY)
+    model, history = core.train_model(tok.encode(STORY), config, steps=150, batch_size=16,
+                                      lr=3e-3, eval_every=50, log=lambda *_: None)
+    return model, history
+
+
+def test_untrained_loss_is_near_uniform(tok):
+    torch.manual_seed(0)
+    model = core.GPT(core.GPTConfig(vocab_size=tok.vocab_size, **TINY))
+    x, y = core.get_batch(torch.tensor(tok.encode(STORY)), 32, 4)
+    assert torch.equal(x[:, 1:], y[:, :-1])  # targets are the inputs shifted by one
+    _, loss = model(x, y)
+    assert abs(loss.item() - math.log(tok.vocab_size)) < 0.5
+
+
+def test_training_lowers_the_loss(trained):
+    _, history = trained
+    assert history[-1]["train_loss"] < history[0]["train_loss"] / 2
+    assert history[-1]["val_loss"] < history[0]["val_loss"] / 2
+
+
+def test_checkpoint_round_trip(trained, tok, tmp_path):
+    model, history = trained
+    core.save_checkpoint(tmp_path / "m.pt", model, tok, history)
+    loaded, tok2, hist2 = core.load_checkpoint(tmp_path / "m.pt")
+    x = torch.tensor([tok.encode("The captain")])
+    assert torch.allclose(model(x)[0], loaded(x)[0])
+    assert tok2.merges == tok.merges and hist2 == history
 
 
 # Milestone 5: Implement a text generation feature that creates coherent story continuations.

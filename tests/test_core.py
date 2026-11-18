@@ -60,9 +60,22 @@ def test_embeddings_add_token_and_position():
 
 
 # Milestone 3: Build the causal self-attention mechanism and assemble the transformer block.
-@pytest.mark.skip(reason="remove this line when you start milestone 3")
-def test_milestone_3():
-    raise NotImplementedError("write the test for milestone 3")
+def test_attention_cannot_see_the_future():
+    torch.manual_seed(0)
+    attn = core.CausalSelfAttention(n_embd=16, n_head=4, block_size=8)
+    x = torch.randn(1, 6, 16)
+    changed = x.clone()
+    changed[0, 4:] = torch.randn(2, 16)  # change only positions 4 and 5
+    a, b = attn(x), attn(changed)
+    assert torch.allclose(a[0, :4], b[0, :4], atol=1e-6)  # earlier positions are unaffected
+    assert not torch.allclose(a[0, 4:], b[0, 4:])
+
+
+def test_block_keeps_shape_and_checks_heads():
+    block = core.Block(n_embd=16, n_head=4, block_size=8)
+    assert block(torch.randn(2, 5, 16)).shape == (2, 5, 16)
+    with pytest.raises(ValueError):
+        core.CausalSelfAttention(n_embd=10, n_head=4, block_size=8)
 
 
 # Milestone 4: Set up the training loop and train the GPT model on the narrative data.

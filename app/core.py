@@ -221,9 +221,57 @@ def nearest_tokens(model: "GPT", tok: BPETokenizer, text: str, k: int = 5) -> li
 
 
 # --- Milestone 3: Build the causal self-attention mechanism and assemble the transformer block.
-# Hint: Causal Self-Attention & Transformer Block: Construct the causal self-attention layer and integrate it into a transformer block.
-def milestone_3():  # TODO(milestone 3)
-    raise NotImplementedError("TODO(milestone 3)")
+
+class CausalSelfAttention(nn.Module):
+    """Multi-head self-attention where each position may only look at itself and earlier positions."""
+
+    def __init__(self, n_embd: int, n_head: int, block_size: int, dropout: float = 0.0):
+        super().__init__()
+        if n_embd % n_head:
+            raise ValueError("n_embd must be divisible by n_head")
+        self.n_head = n_head
+        self.qkv = nn.Linear(n_embd, 3 * n_embd)
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.attn_drop = nn.Dropout(dropout)
+        self.resid_drop = nn.Dropout(dropout)
+        self.register_buffer("mask", torch.tril(torch.ones(block_size, block_size, dtype=torch.bool)),
+                             persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, C = x.shape
+        hd = C // self.n_head
+        q, k, v = self.qkv(x).split(C, dim=2)
+        q, k, v = (t.view(B, T, self.n_head, hd).transpose(1, 2) for t in (q, k, v))  # (B, h, T, hd)
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(hd)                                 # (B, h, T, T)
+        att = att.masked_fill(~self.mask[:T, :T], float("-inf"))                        # hide the future
+        att = self.attn_drop(F.softmax(att, dim=-1))
+        y = (att @ v).transpose(1, 2).contiguous().view(B, T, C)                        # re-join heads
+        return self.resid_drop(self.proj(y))
+
+
+class MLP(nn.Module):
+    def __init__(self, n_embd: int, dropout: float = 0.0):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(n_embd, 4 * n_embd), nn.GELU(),
+                                 nn.Linear(4 * n_embd, n_embd), nn.Dropout(dropout))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class Block(nn.Module):
+    """Pre-LayerNorm transformer block: x + attention(LN(x)), then x + MLP(LN(x))."""
+
+    def __init__(self, n_embd: int, n_head: int, block_size: int, dropout: float = 0.0):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.attn = CausalSelfAttention(n_embd, n_head, block_size, dropout)
+        self.ln2 = nn.LayerNorm(n_embd)
+        self.mlp = MLP(n_embd, dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x))
+        return x + self.mlp(self.ln2(x))
 
 
 # --- Milestone 4: Set up the training loop and train the GPT model on the narrative data.

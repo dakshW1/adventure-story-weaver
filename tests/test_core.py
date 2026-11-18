@@ -1,13 +1,32 @@
-"""Your tests. Each milestone in README.md gets one here: write the test first, then make it pass.
+"""Tests: one block per milestone in README.md. Everything here uses tiny models so it runs in seconds on CPU."""
+import math
 
-They start skipped. Remove the `skip` line as you work on each milestone.
-"""
 import pytest
+import torch
+
+from app import core
+
+STORY = ("The captain looked at the map. The map showed the island. "
+         "The crew sailed to the island and the captain found the gold. ") * 40
+
 
 # Milestone 1: Assemble a small corpus of text from public domain adventure stories or fantasy novels.
-@pytest.mark.skip(reason="remove this line when you start milestone 1")
-def test_milestone_1():
-    raise NotImplementedError("write the test for milestone 1")
+def test_strip_gutenberg_keeps_only_the_book():
+    raw = ("Licence blah\n*** START OF THE PROJECT GUTENBERG EBOOK TREASURE ISLAND ***\n"
+           "Squire Trelawney asked me to write.\n*** END OF THE PROJECT GUTENBERG EBOOK ***\nmore licence")
+    assert core.strip_gutenberg(raw).strip() == "Squire Trelawney asked me to write."
+
+
+def test_normalize_rejoins_wrapped_lines_and_cleans_typography():
+    raw = "“Ahoy,” said\r\nthe _captain_.\r\n\r\n\r\n[Illustration: a ship]\r\nNext  para—here."
+    assert core.normalize(raw) == "\"Ahoy,\" said the captain.\n\nNext para--here.\n"
+
+
+def test_corpus_is_built_from_public_domain_books():
+    text = core.load_corpus()
+    assert len(text) > 500_000
+    assert "gutenberg" not in text.lower()
+    assert "Long John Silver" in text and "Quatermain" in text  # both novels made it in
 
 
 # Milestone 2: Implement the byte-pair tokenizer and generate embeddings from the story text.

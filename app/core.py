@@ -391,9 +391,51 @@ def load_checkpoint(path: Path = CHECKPOINT) -> tuple[GPT, BPETokenizer, list[di
 
 
 # --- Milestone 5: Implement a text generation feature that creates coherent story continuations.
-# Hint: Text Generation: Develop the sampling strategy (e.g., greedy, temperature) to generate new sequences from your trained model.
-def milestone_5():  # TODO(milestone 5)
-    raise NotImplementedError("TODO(milestone 5)")
+
+def next_token(logits: torch.Tensor, strategy: str = "sample", temperature: float = 0.8,
+               top_k: int | None = None, top_p: float | None = None,
+               gen: torch.Generator | None = None) -> int:
+    """Pick the next token from a (vocab,) vector of logits.
+
+    greedy: always the most likely token.
+    sample: softmax(logits / temperature), optionally keeping only the top_k tokens
+            and/or the smallest set whose probability adds up to top_p (nucleus sampling).
+    """
+    if strategy == "greedy":
+        return int(logits.argmax())
+    if strategy != "sample":
+        raise ValueError("strategy must be 'greedy' or 'sample'")
+    logits = logits / max(temperature, 1e-6)
+    if top_k:
+        kth = torch.topk(logits, min(top_k, logits.numel())).values[-1]
+        logits = logits.masked_fill(logits < kth, float("-inf"))
+    if top_p is not None and top_p < 1.0:
+        sorted_logits, order = torch.sort(logits, descending=True)
+        cum = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        drop = cum - F.softmax(sorted_logits, dim=-1) > top_p  # keep the token that crosses top_p
+        logits = logits.masked_fill(torch.zeros_like(drop).scatter(0, order, drop), float("-inf"))
+    return int(torch.multinomial(F.softmax(logits, dim=-1), 1, generator=gen))
+
+
+@torch.no_grad()
+def generate(model: GPT, tok: BPETokenizer, prompt: str, max_new_tokens: int = 120,
+             strategy: str = "sample", temperature: float = 0.8, top_k: int | None = 40,
+             top_p: float | None = None, seed: int | None = None, whole_sentences: bool = True) -> str:
+    """Continue prompt. Returns only the new text (the continuation)."""
+    gen = torch.Generator().manual_seed(seed) if seed is not None else None
+    ids = tok.encode(prompt) or tok.encode("\n")
+    start = len(ids)
+    for _ in range(max_new_tokens):
+        context = torch.tensor([ids[-model.config.block_size:]])
+        logits, _ = model(context)
+        ids.append(next_token(logits[0, -1], strategy, temperature, top_k, top_p, gen))
+    text = tok.decode(ids[start:])
+    if whole_sentences:  # cut a dangling half-sentence at the end
+        cut = max(text.rfind(c) for c in ".!?")
+        if cut > len(text) // 3:
+            text = text[:cut + 1]
+            text += '"' if text.count('"') % 2 else ""
+    return text
 
 
 # --- Milestone 6: Design a CLI where users can input a story prompt and receive generated segments.

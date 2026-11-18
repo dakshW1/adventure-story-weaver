@@ -115,9 +115,24 @@ def test_checkpoint_round_trip(trained, tok, tmp_path):
 
 
 # Milestone 5: Implement a text generation feature that creates coherent story continuations.
-@pytest.mark.skip(reason="remove this line when you start milestone 5")
-def test_milestone_5():
-    raise NotImplementedError("write the test for milestone 5")
+def test_sampling_strategies():
+    logits = torch.tensor([0.1, 3.0, 2.0, -1.0])
+    assert core.next_token(logits, "greedy") == 1
+    gen = torch.Generator().manual_seed(0)
+    assert all(core.next_token(logits, top_k=1, gen=gen) == 1 for _ in range(20))
+    assert all(core.next_token(logits, top_p=0.01, gen=gen) == 1 for _ in range(20))
+    picks = {core.next_token(logits, top_k=2, temperature=5.0, gen=gen) for _ in range(200)}
+    assert picks == {1, 2}  # top-k=2 never picks the two unlikely tokens
+
+
+def test_generate_continues_the_prompt(trained, tok):
+    model, _ = trained
+    a = core.generate(model, tok, "The crew sailed to the", max_new_tokens=30, seed=1)
+    assert a == core.generate(model, tok, "The crew sailed to the", max_new_tokens=30, seed=1)
+    prompt = STORY[1000:1100].split(" ", 1)[1].rsplit(" ", 1)[0]  # a real passage, cut between words
+    greedy = core.generate(model, tok, prompt, max_new_tokens=3, strategy="greedy", whole_sentences=False)
+    following = STORY[STORY.index(prompt, 1000) + len(prompt):]
+    assert greedy and following.startswith(greedy)       # it learned how the story continues
 
 
 # Milestone 6: Design a CLI where users can input a story prompt and receive generated segments.

@@ -109,9 +109,115 @@ def load_corpus(path: Path = CORPUS) -> str:
 
 
 # --- Milestone 2: Implement the byte-pair tokenizer and generate embeddings from the story text.
-# Hint: Byte-Pair Encoding & Embeddings: Implement the BPE algorithm and create token embeddings from your corpus.
-def milestone_2():  # TODO(milestone 2)
-    raise NotImplementedError("TODO(milestone 2)")
+
+# Pre-tokenisation: merges never cross word boundaries (a leading space stays with its word).
+_PRETOKEN = re.compile(r" ?[A-Za-z]+| ?[0-9]+| ?[^\sA-Za-z0-9]+|\s+")
+
+
+def _merge(ids: list[int], pair: tuple[int, int], new_id: int) -> list[int]:
+    out, i = [], 0
+    while i < len(ids):
+        if i + 1 < len(ids) and ids[i] == pair[0] and ids[i + 1] == pair[1]:
+            out.append(new_id)
+            i += 2
+        else:
+            out.append(ids[i])
+            i += 1
+    return out
+
+
+class BPETokenizer:
+    """Byte-level byte-pair encoding, built from scratch.
+
+    Starts from the 256 possible bytes (so any text can be encoded, nothing is ever unknown)
+    and repeatedly merges the most frequent adjacent pair into a new token.
+    """
+
+    def __init__(self, merges: list[tuple[int, int]] | None = None):
+        self.merges = [tuple(m) for m in (merges or [])]
+        self.ranks = {pair: i for i, pair in enumerate(self.merges)}
+        self.vocab = {i: bytes([i]) for i in range(256)}
+        for i, (a, b) in enumerate(self.merges):
+            self.vocab[256 + i] = self.vocab[a] + self.vocab[b]
+        self._cache: dict[str, list[int]] = {}
+
+    @property
+    def vocab_size(self) -> int:
+        return 256 + len(self.merges)
+
+    @classmethod
+    def train(cls, text: str, vocab_size: int = 1024) -> "BPETokenizer":
+        if vocab_size < 256:
+            raise ValueError("vocab_size must be at least 256 (one token per byte)")
+        word_freq = Counter(_PRETOKEN.findall(text))
+        seqs = {w: list(w.encode("utf-8")) for w in word_freq}
+        merges = []
+        for new_id in range(256, vocab_size):
+            pairs: Counter = Counter()
+            for w, f in word_freq.items():
+                s = seqs[w]
+                for pair in zip(s, s[1:]):
+                    pairs[pair] += f
+            if not pairs:
+                break
+            best = max(pairs, key=lambda p: (pairs[p], -p[0], -p[1]))
+            merges.append(best)
+            for w, s in seqs.items():
+                if len(s) > 1:
+                    seqs[w] = _merge(s, best, new_id)
+        return cls(merges)
+
+    def _encode_word(self, word: str) -> list[int]:
+        if word in self._cache:
+            return self._cache[word]
+        ids = list(word.encode("utf-8"))
+        while len(ids) > 1:
+            pair = min(zip(ids, ids[1:]), key=lambda p: self.ranks.get(p, math.inf))
+            if pair not in self.ranks:
+                break
+            ids = _merge(ids, pair, 256 + self.ranks[pair])
+        self._cache[word] = ids
+        return ids
+
+    def encode(self, text: str) -> list[int]:
+        return [i for word in _PRETOKEN.findall(text) for i in self._encode_word(word)]
+
+    def decode(self, ids: list[int]) -> str:
+        return b"".join(self.vocab[i] for i in ids).decode("utf-8", errors="replace")
+
+    def token_strings(self, ids: list[int]) -> list[str]:
+        return [self.vocab[i].decode("utf-8", errors="replace") for i in ids]
+
+    def save(self, path: Path) -> None:
+        Path(path).write_text(json.dumps({"merges": self.merges}), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: Path) -> "BPETokenizer":
+        return cls(json.loads(Path(path).read_text(encoding="utf-8"))["merges"])
+
+
+class Embeddings(nn.Module):
+    """Token embedding (what the token is) + learned position embedding (where it is)."""
+
+    def __init__(self, vocab_size: int, block_size: int, n_embd: int):
+        super().__init__()
+        self.tok = nn.Embedding(vocab_size, n_embd)
+        self.pos = nn.Embedding(block_size, n_embd)
+
+    def forward(self, idx: torch.Tensor) -> torch.Tensor:
+        positions = torch.arange(idx.shape[1], device=idx.device)
+        return self.tok(idx) + self.pos(positions)
+
+
+def nearest_tokens(model: "GPT", tok: BPETokenizer, text: str, k: int = 5) -> list[tuple[str, float]]:
+    """Tokens whose learned embeddings are closest (cosine similarity) to the token for text."""
+    ids = tok.encode(text)
+    if len(ids) != 1:
+        raise ValueError(f"{text!r} is {len(ids)} tokens; pick something that is a single token")
+    weights = F.normalize(model.emb.tok.weight.detach(), dim=1)
+    sims = weights @ weights[ids[0]]
+    best = sims.topk(k + 1).indices.tolist()
+    return [(tok.decode([i]), round(sims[i].item(), 3)) for i in best if i != ids[0]][:k]
 
 
 # --- Milestone 3: Build the causal self-attention mechanism and assemble the transformer block.

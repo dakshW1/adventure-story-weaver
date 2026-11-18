@@ -136,7 +136,30 @@ def test_generate_continues_the_prompt(trained, tok):
 
 
 # Milestone 6: Design a CLI where users can input a story prompt and receive generated segments.
-@pytest.mark.skip(reason="remove this line when you start milestone 6")
-def test_milestone_6():
-    raise NotImplementedError("write the test for milestone 6")
+from app.cli import main, play  # noqa: E402
 
+
+@pytest.fixture
+def checkpoint(trained, tok, tmp_path):
+    path = tmp_path / "tiny.pt"
+    core.save_checkpoint(path, trained[0], tok, trained[1])
+    return path
+
+
+def test_cli_generate_prints_segments(checkpoint, capsys):
+    main(["generate", "The captain", "--checkpoint", str(checkpoint), "--tokens", "20",
+          "--segments", "2", "--seed", "3"])
+    out = capsys.readouterr().out
+    assert out.count("--- segment") == 2 and out.count("The captain") >= 2
+
+
+def test_cli_info(checkpoint, capsys):
+    main(["info", "--checkpoint", str(checkpoint)])
+    assert "parameters" in capsys.readouterr().out
+
+
+def test_play_builds_a_story_turn_by_turn(trained, tok):
+    answers = iter(["The captain looked at the map.", "Then the crew", ""])
+    story = play(trained[0], tok, {"max_new_tokens": 15}, inp=lambda _: next(answers),
+                 out=lambda *_: None, seed=0)
+    assert story.startswith("The captain looked at the map.") and "Then the crew" in story

@@ -439,6 +439,4 @@ def generate(model: GPT, tok: BPETokenizer, prompt: str, max_new_tokens: int = 1
 
 
 # --- Milestone 6: Design a CLI where users can input a story prompt and receive generated segments.
-# Hint: Command-Line Interface: Build a simple CLI for user input of prompts and display of generated story segments.
-def milestone_6():  # TODO(milestone 6)
-    raise NotImplementedError("TODO(milestone 6)")
+# The CLI lives in app/cli.py and calls the functions above.
